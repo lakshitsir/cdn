@@ -1,93 +1,92 @@
 import axios from "axios";
 
 const TOKEN = process.env.BOT_TOKEN;
-const TG_API = `https://api.telegram.org/bot${TOKEN}`;
-const FILE_API = `https://api.telegram.org/file/bot${TOKEN}`;
+const TG = `https://api.telegram.org/bot${TOKEN}`;
+const FILE = `https://api.telegram.org/file/bot${TOKEN}`;
+const ALLOWED = 5421311764;
 
-// 🔐 Single-user lock
-const ALLOWED_USER_ID = 5421311764;
-
-// helpers
-const mb = (b) => (b / (1024 * 1024)).toFixed(2);
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// utils
+const MB = (b) => (b / (1024 * 1024)).toFixed(2);
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(200).send("OK");
-
   try {
-    const update = req.body;
-    const msg = update.message;
+    if (req.method !== "POST") {
+      return res.status(200).send("🚀 Bot Running");
+    }
+
+    const msg = req.body?.message;
     if (!msg) return res.send("No message");
 
-    const chatId = msg.chat.id;
+    const chatId = msg.chat?.id;
 
-    // 🔒 strict: only you, only private
-    if (chatId !== ALLOWED_USER_ID || msg.chat.type !== "private") {
+    // 🔐 secure filter
+    if (chatId !== ALLOWED || msg.chat.type !== "private") {
       return res.send("Ignored");
     }
 
-    // 🎬 small UX touch (shows “working…”)
-    await sendChatAction(chatId, "upload_document");
+    // 🎬 typing animation
+    await action(chatId, "upload_document");
 
-    // 🎯 detect ANY media
-    let file = null;
-    if (msg.document) file = msg.document;
-    else if (msg.video) file = msg.video;
-    else if (msg.audio) file = msg.audio;
-    else if (msg.voice) file = msg.voice;
-    else if (msg.animation) file = msg.animation;
-    else if (msg.video_note) file = msg.video_note;
-    else if (msg.photo) file = msg.photo[msg.photo.length - 1]; // best quality
+    // 📦 detect ANY media
+    let file =
+      msg.document ||
+      msg.video ||
+      msg.audio ||
+      msg.voice ||
+      msg.animation ||
+      msg.video_note ||
+      (msg.photo ? msg.photo[msg.photo.length - 1] : null);
 
     if (!file) {
-      await sendText(chatId, "📤 Send any media/file to generate stream link.");
+      await send(chatId, "📤 Send any media/file");
       return res.send("No media");
     }
 
     const fileId = file.file_id;
-    const fileSize = file.file_size || 0;
-    const fileName = file.file_name || "media";
+    const size = file.file_size || 0;
+    const name = file.file_name || "media";
     const mime = file.mime_type || "unknown";
 
     // 🔗 get file path
-    const { data } = await axios.get(`${TG_API}/getFile`, {
-      params: { file_id: fileId },
-      timeout: 15000
+    const r = await axios.get(`${TG}/getFile`, {
+      params: { file_id: fileId }
     });
-    if (!data?.ok) throw new Error("getFile failed");
 
-    const filePath = data.result.file_path;
-    const link = `${FILE_API}/${filePath}`;
+    if (!r.data?.ok) throw new Error("getFile failed");
 
-    // 🧠 intelligent playback hint
-    const sizeNum = parseFloat(mb(fileSize));
+    const path = r.data.result.file_path;
+    const link = `${FILE}/${path}`;
+
+    // 🧠 smart logic
     let note = "";
-    if (sizeNum < 100) {
-      note = "✅ Smooth in browser • ⚡ Instant play";
-    } else if (sizeNum < 500) {
-      note = "⚠️ Medium file • Browser ok, VLC better";
+    const sizeMB = parseFloat(MB(size));
+
+    if (sizeMB < 100) {
+      note = "✅ Smooth in browser";
+    } else if (sizeMB < 500) {
+      note = "⚠️ Medium file → VLC recommended";
     } else {
-      note = "🚨 Large file • Use VLC / MX Player for best streaming";
+      note = "🚨 Large file → Use VLC / MX Player";
     }
 
-    if (/mp4/i.test(mime)) {
+    if (mime.includes("mp4")) {
       note += "\n🎞️ MP4 → best browser support";
-    } else if (/mkv|matroska/i.test(mime)) {
-      note += "\n🎞️ MKV → prefer VLC";
+    } else if (mime.includes("mkv")) {
+      note += "\n🎞️ MKV → better in VLC";
     }
 
-    // 💎 caption (clean + pro)
+    // 🎨 UI caption
     const caption =
-`📁 Name: ${fileName}
-📦 Size: ${mb(fileSize)} MB
-📄 Type: ${mime}
+`📁 ${name}
+📦 ${MB(size)} MB
+📄 ${mime}
 
 ${note}
 
 👨‍💻 Developer: Lakshit`;
 
-    // 🔘 inline buttons (animated-feel UX)
-    const keyboard = {
+    // 🔘 buttons
+    const buttons = {
       inline_keyboard: [
         [
           { text: "▶️ Stream", url: link },
@@ -99,57 +98,55 @@ ${note}
       ]
     };
 
-    // 🎬 best UX: if it’s a video/photo, send preview with buttons
+    // 🎬 best UX (auto preview)
     if (msg.video) {
-      await axios.post(`${TG_API}/sendVideo`, {
+      await axios.post(`${TG}/sendVideo`, {
         chat_id: chatId,
-        video: fileId, // reuse Telegram file (no reupload cost)
+        video: fileId,
         caption,
-        reply_markup: keyboard,
-        supports_streaming: true
-      }, { timeout: 20000 });
+        supports_streaming: true,
+        reply_markup: buttons
+      });
     } else if (msg.photo) {
-      await axios.post(`${TG_API}/sendPhoto`, {
+      await axios.post(`${TG}/sendPhoto`, {
         chat_id: chatId,
         photo: fileId,
         caption,
-        reply_markup: keyboard
-      }, { timeout: 20000 });
+        reply_markup: buttons
+      });
     } else {
-      // fallback: text message with buttons
-      await axios.post(`${TG_API}/sendMessage`, {
+      await axios.post(`${TG}/sendMessage`, {
         chat_id: chatId,
-        text: `${caption}\n\n🎬 Stream:\n${link}\n\n⬇️ Download:\n${link}`,
+        text: `${caption}\n\n🎬 Stream:\n${link}`,
         disable_web_page_preview: true,
-        reply_markup: keyboard
-      }, { timeout: 20000 });
+        reply_markup: buttons
+      });
     }
 
-    return res.send("Done");
+    return res.send("OK");
 
-  } catch (err) {
-    console.error("ERROR:", err?.response?.data || err.message);
-    // silent fail (no spam), but keep webhook OK
+  } catch (e) {
+    console.error("ERROR:", e.message);
     return res.status(200).send("Handled");
   }
 }
 
-// helpers
-async function sendText(chatId, text) {
-  return axios.post(`${TG_API}/sendMessage`, {
-    chat_id: chatId,
-    text,
-    disable_web_page_preview: true
-  });
-}
-
-async function sendChatAction(chatId, action) {
+// send msg
+async function send(chatId, text) {
   try {
-    await axios.post(`${TG_API}/sendChatAction`, {
+    await axios.post(`${TG}/sendMessage`, {
       chat_id: chatId,
-      action
+      text
     });
-    // tiny delay so user sees it
-    await sleep(300);
   } catch {}
 }
+
+// typing animation
+async function action(chatId, type) {
+  try {
+    await axios.post(`${TG}/sendChatAction`, {
+      chat_id: chatId,
+      action: type
+    });
+  } catch {}
+        }
